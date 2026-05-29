@@ -109,7 +109,7 @@ function MCPClientActionsMenu({
 						}}
 					>
 						<KeyRound className="h-4 w-4" />
-						Authorize
+						{client.config.auth_type === "per_user_oauth" ? "Verify" : "Authorize"}
 					</DropdownMenuItem>
 				)}
 				{hasUpdateAccess && (
@@ -189,9 +189,12 @@ export default function MCPClientsTable({
 	const [togglingClientIds, setTogglingClientIds] = useState<Set<string>>(new Set());
 	// Drives the OAuth2Authorizer dialog for a config.json-bootstrapped client
 	// sitting in pending_verification, triggered from the row actions menu.
-	const [bootstrapAuthorize, setBootstrapAuthorize] = useState<{ authorizeUrl: string; oauthConfigId: string; mcpClientId: string } | null>(
-		null,
-	);
+	const [bootstrapAuthorize, setBootstrapAuthorize] = useState<{
+		authorizeUrl: string;
+		oauthConfigId: string;
+		mcpClientId: string;
+		isPerUserOauth: boolean;
+	} | null>(null);
 
 	// RTK Query mutations
 	const [reconnectMCPClient] = useReconnectMCPClientMutation();
@@ -227,6 +230,7 @@ export default function MCPClientsTable({
 					authorizeUrl: response.authorize_url,
 					oauthConfigId: response.oauth_config_id,
 					mcpClientId: client.config.client_id,
+					isPerUserOauth: client.config.auth_type === "per_user_oauth",
 				});
 			} else {
 				toast({
@@ -401,7 +405,12 @@ export default function MCPClientsTable({
 					open={!!bootstrapAuthorize}
 					onClose={() => setBootstrapAuthorize(null)}
 					onSuccess={async () => {
-						toast({ title: "Success", description: "MCP client connected successfully" });
+						toast({
+							title: "Success",
+							description: bootstrapAuthorize.isPerUserOauth
+								? "OAuth setup verified successfully. Each user will authenticate individually."
+								: "MCP client connected successfully",
+						});
 						setBootstrapAuthorize(null);
 						if (refetch) {
 							await refetch();
@@ -413,6 +422,7 @@ export default function MCPClientsTable({
 					authorizeUrl={bootstrapAuthorize.authorizeUrl}
 					oauthConfigId={bootstrapAuthorize.oauthConfigId}
 					mcpClientId={bootstrapAuthorize.mcpClientId}
+					isPerUserOauth={bootstrapAuthorize.isPerUserOauth}
 				/>
 			)}
 
