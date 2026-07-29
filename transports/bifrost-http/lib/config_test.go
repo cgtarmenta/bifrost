@@ -1405,10 +1405,6 @@ func (m *MockConfigStore) UpsertPlugin(ctx context.Context, plugin *tables.Table
 
 // OAuth config
 
-func (m *MockConfigStore) GetOauthConfigByTokenID(ctx context.Context, tokenID string) (*tables.TableOauthConfig, error) {
-	return nil, nil
-}
-
 func (m *MockConfigStore) CreateOauthConfig(ctx context.Context, config *tables.TableOauthConfig) error {
 	return nil
 }
@@ -1419,6 +1415,10 @@ func (m *MockConfigStore) UpdateOauthConfig(ctx context.Context, config *tables.
 
 // OAuth token
 func (m *MockConfigStore) GetOauthTokenByID(ctx context.Context, id string) (*tables.TableMCPOauthToken, error) {
+	return nil, nil
+}
+
+func (m *MockConfigStore) GetSharedOauthTokenByConfigID(ctx context.Context, oauthConfigID string) (*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
 
@@ -1438,7 +1438,7 @@ func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error
 	return nil
 }
 
-func (m *MockConfigStore) DeleteOauthTokensByConfigAndMode(ctx context.Context, oauthConfigID, authMode string, tx ...*gorm.DB) error {
+func (m *MockConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error {
 	return nil
 }
 
