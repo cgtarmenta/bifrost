@@ -1456,6 +1456,14 @@ func (m *MockConfigStore) GetAdminOauthTokenByConfigID(ctx context.Context, oaut
 	return nil, nil
 }
 
+func (m *MockConfigStore) GetAdminOauthTokensByConfigIDs(ctx context.Context, oauthConfigIDs []string) (map[string]*tables.TableMCPOauthToken, error) {
+	return map[string]*tables.TableMCPOauthToken{}, nil
+}
+
+func (m *MockConfigStore) PromoteSharedOauthTokenToAdmin(ctx context.Context, oauthConfigID, mcpClientID string) error {
+	return nil
+}
+
 func (m *MockConfigStore) GetExpiringOauthTokens(ctx context.Context, before time.Time, authModes []string) ([]*tables.TableMCPOauthToken, error) {
 	return nil, nil
 }
@@ -1477,10 +1485,6 @@ func (m *MockConfigStore) DeleteOauthToken(ctx context.Context, id string) error
 }
 
 func (m *MockConfigStore) DeleteSharedOauthTokensByConfigID(ctx context.Context, oauthConfigID string, tx ...*gorm.DB) error {
-	return nil
-}
-
-func (m *MockConfigStore) DeleteAdminOauthTokenByMCPClientID(ctx context.Context, mcpClientID string) error {
 	return nil
 }
 
@@ -1617,6 +1621,9 @@ func (m *MockConfigStore) GetMCPPerUserHeaderCredentialByMode(ctx context.Contex
 }
 func (m *MockConfigStore) GetMCPPerUserHeaderCredentialByID(ctx context.Context, id string) (*tables.TableMCPPerUserHeaderCredential, error) {
 	return nil, nil
+}
+func (m *MockConfigStore) GetAdminMCPPerUserHeaderCredentialsByClientIDs(ctx context.Context, mcpClientIDs []string) (map[string]*tables.TableMCPPerUserHeaderCredential, error) {
+	return map[string]*tables.TableMCPPerUserHeaderCredential{}, nil
 }
 func (m *MockConfigStore) UpsertMCPPerUserHeaderCredential(ctx context.Context, cred *tables.TableMCPPerUserHeaderCredential) error {
 	return nil
