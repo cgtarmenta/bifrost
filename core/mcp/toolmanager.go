@@ -927,8 +927,8 @@ func (m *ToolsManager) recoverSharedConnection(
 		return nil, false
 	}
 
-	// The reconnect replaces the client state entry, so re-resolve it to pick
-	// up the fresh connection.
+	// GetClientForTool returns a snapshot copy of the client state, so it must
+	// be re-resolved after the reconnect to pick up the fresh connection.
 	state := m.clientManager.GetClientForTool(toolName)
 	if state == nil {
 		return nil, false
