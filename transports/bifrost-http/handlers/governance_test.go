@@ -271,6 +271,8 @@ type mockComplexityGovernanceManager struct {
 	validationErr  error
 	semanticStatus complexity.SemanticStatusInfo
 	semanticErr    error
+	probeDimension int
+	probeErr       error
 }
 
 func (m *mockComplexityGovernanceManager) ReloadComplexityAnalyzerConfig(_ context.Context, config *complexity.AnalyzerConfig) error {
@@ -289,6 +291,10 @@ func (m *mockComplexityGovernanceManager) ValidateComplexityAnalyzerConfig(_ con
 // non-persisted semantic classifier state.
 func (m *mockComplexityGovernanceManager) GetComplexitySemanticStatus(_ context.Context) (complexity.SemanticStatusInfo, error) {
 	return m.semanticStatus, m.semanticErr
+}
+
+func (m *mockComplexityGovernanceManager) ProbeComplexityEmbeddingDimension(_ context.Context, _ schemas.ModelProvider, _ string) (int, error) {
+	return m.probeDimension, m.probeErr
 }
 
 func testComplexityAnalyzerPayload(t *testing.T, cfg complexity.AnalyzerConfig) string {
@@ -472,6 +478,23 @@ func TestComplexitySemanticStatusReturnsRuntimeReadiness(t *testing.T) {
 	}
 	if status.State != complexity.SemanticStatusWarming || status.Loaded != 2 || status.Total != 3 || !status.ServingPrevious {
 		t.Fatalf("unexpected semantic status: %+v", status)
+	}
+}
+
+func TestProbeComplexityEmbeddingDimensionReportsExecutorStartupAsUnavailable(t *testing.T) {
+	SetLogger(&mockLogger{})
+	handler := &GovernanceHandler{governanceManager: &mockComplexityGovernanceManager{
+		probeErr: governance.ErrEmbeddingRequestExecutorNotConfigured,
+	}}
+
+	ctx := newTestRequestCtx(`{"provider":"openai","embedding_model":"text-embedding-3-small"}`)
+	handler.probeComplexityEmbeddingDimension(ctx)
+
+	if ctx.Response.StatusCode() != fasthttp.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d: %s", ctx.Response.StatusCode(), string(ctx.Response.Body()))
+	}
+	if !strings.Contains(string(ctx.Response.Body()), "still initializing") {
+		t.Fatalf("expected retryable startup message, got %s", string(ctx.Response.Body()))
 	}
 }
 

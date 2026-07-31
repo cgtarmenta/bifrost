@@ -138,7 +138,7 @@ const (
 )
 
 // DefaultComplexitySemanticTimeout bounds per-request embedding generation.
-const DefaultComplexitySemanticTimeout = 100 * time.Millisecond
+const DefaultComplexitySemanticTimeout = 1500 * time.Millisecond
 
 // ComplexitySemanticConfig configures the embedding-based complexity
 // classifier. A non-nil value enables semantic classification. The classifier
@@ -176,7 +176,7 @@ type ComplexitySemanticConfig struct {
 	VectorStore         string `json:"vector_store,omitempty"`
 }
 
-// UnmarshalJSON accepts Timeout as a duration string ("100ms") or a JSON number
+// UnmarshalJSON accepts Timeout as a duration string ("500ms") or a JSON number
 // (milliseconds). All other fields decode through the default path via an alias.
 func (c *ComplexitySemanticConfig) UnmarshalJSON(data []byte) error {
 	// alias suppresses ComplexitySemanticConfig's UnmarshalJSON to avoid

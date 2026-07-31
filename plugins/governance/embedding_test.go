@@ -139,6 +139,7 @@ func TestProbeEmbeddingDimensionRequiresExecutorAndReportsFailures(t *testing.T)
 	unwired := &GovernancePlugin{}
 	_, err := unwired.ProbeEmbeddingDimension(t.Context(), "openai", "text-embedding-3-small")
 	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrEmbeddingRequestExecutorNotConfigured)
 	assert.Contains(t, err.Error(), "executor is not configured")
 
 	plugin := &GovernancePlugin{}
@@ -272,7 +273,7 @@ func TestGenerateEmbeddingDistinguishesTimeoutFromOtherFailures(t *testing.T) {
 }
 
 // TestWarmupEmbedsDoNotInheritTheRequestTimeout is a regression guard: warmup
-// used to run through semantic.Timeout, the hot-path budget (100ms by default).
+// used to run through semantic.Timeout, the hot-path budget (1500ms by default).
 // A 32-exemplar batch cannot finish in that window, so every warmup failed with
 // a 504 and semantic routing silently served its fallback forever.
 func TestWarmupEmbedsDoNotInheritTheRequestTimeout(t *testing.T) {

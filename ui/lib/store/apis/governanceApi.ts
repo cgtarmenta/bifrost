@@ -41,7 +41,12 @@ import {
 	UpdateVirtualKeyRequest,
 	VirtualKey,
 } from "@/lib/types/governance";
-import { AnalyzerConfig, SemanticStatusInfo } from "@/lib/types/complexityRouter";
+import {
+	AnalyzerConfig,
+	ProbeEmbeddingDimensionRequest,
+	ProbeEmbeddingDimensionResponse,
+	SemanticStatusInfo,
+} from "@/lib/types/complexityRouter";
 import { baseApi } from "./baseApi";
 
 type PricingOverrideQueryArgs = {
@@ -862,10 +867,25 @@ export const governanceApi = baseApi.injectEndpoints({
 			providesTags: ["ComplexityAnalyzerConfig"],
 		}),
 
+		// Runtime readiness, not persisted config. Tagged with the config so that
+		// saving a new analyzer config refetches it: every save restarts semantic
+		// warmup, which is exactly when the state changes.
 		getComplexitySemanticStatus: builder.query<SemanticStatusInfo, void>({
 			query: () => ({
 				url: "/governance/complexity-analyzer-status",
 				method: "GET",
+			}),
+			providesTags: ["ComplexityAnalyzerConfig"],
+		}),
+
+		// Measures the vector width of an embedding provider/model pair. A
+		// mutation rather than a query because it makes a real (billable)
+		// embedding call and must only run when the operator picks a model.
+		probeComplexityEmbeddingDimension: builder.mutation<ProbeEmbeddingDimensionResponse, ProbeEmbeddingDimensionRequest>({
+			query: (data) => ({
+				url: "/governance/complexity-analyzer-config/embedding-dimension",
+				method: "POST",
+				body: data,
 			}),
 		}),
 
@@ -953,6 +973,7 @@ export const {
 	// Complexity Analyzer Config
 	useGetComplexityAnalyzerConfigQuery,
 	useGetComplexitySemanticStatusQuery,
+	useProbeComplexityEmbeddingDimensionMutation,
 	useUpdateComplexityAnalyzerConfigMutation,
 	useResetComplexityAnalyzerConfigMutation,
 

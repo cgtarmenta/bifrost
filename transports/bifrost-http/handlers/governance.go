@@ -777,7 +777,6 @@ func (h *GovernanceHandler) reconcileVKModelConfig(ctx context.Context, tx *gorm
 		}
 	}
 
-
 	// Resulting budget count: the desired set if provided, else the existing set.
 	finalBudgetCount := len(mc.Budgets)
 	if d.budgetsProvided {
@@ -1268,6 +1267,10 @@ func (h *GovernanceHandler) probeComplexityEmbeddingDimension(ctx *fasthttp.Requ
 
 	dimension, err := prober.ProbeComplexityEmbeddingDimension(ctx, payload.Provider, payload.EmbeddingModel)
 	if err != nil {
+		if errors.Is(err, governance.ErrEmbeddingRequestExecutorNotConfigured) {
+			SendError(ctx, fasthttp.StatusServiceUnavailable, "embedding service is still initializing; retry in a moment")
+			return
+		}
 		// Almost always an operator-correctable cause (unknown model, missing
 		// key, provider rejecting the request), so it is reported as a client
 		// error the form can render inline.
