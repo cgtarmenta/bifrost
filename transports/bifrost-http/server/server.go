@@ -890,6 +890,23 @@ func (s *BifrostHTTPServer) ValidateComplexityAnalyzerConfig(ctx context.Context
 	return validator.ValidateComplexityAnalyzerConfig(config)
 }
 
+// ProbeComplexityEmbeddingDimension resolves the vector width an embedding
+// provider/model pair produces, so configuration clients can fill the semantic
+// dimension in rather than asking an operator to supply it.
+func (s *BifrostHTTPServer) ProbeComplexityEmbeddingDimension(ctx context.Context, provider schemas.ModelProvider, model string) (int, error) {
+	governancePlugin, err := s.getGovernancePlugin()
+	if err != nil {
+		return 0, fmt.Errorf("governance plugin not found: %w", err)
+	}
+	prober, ok := governancePlugin.(interface {
+		ProbeEmbeddingDimension(context.Context, schemas.ModelProvider, string) (int, error)
+	})
+	if !ok {
+		return 0, fmt.Errorf("governance plugin does not support embedding dimension probing")
+	}
+	return prober.ProbeEmbeddingDimension(ctx, provider, model)
+}
+
 // GetComplexitySemanticStatus returns the current semantic complexity readiness
 // from the active governance plugin.
 func (s *BifrostHTTPServer) GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error) {

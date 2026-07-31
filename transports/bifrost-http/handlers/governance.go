@@ -76,6 +76,22 @@ type complexitySemanticStatusProvider interface {
 	GetComplexitySemanticStatus(ctx context.Context) (complexity.SemanticStatusInfo, error)
 }
 
+type complexityEmbeddingDimensionProber interface {
+	ProbeComplexityEmbeddingDimension(ctx context.Context, provider schemas.ModelProvider, model string) (int, error)
+}
+
+// ProbeEmbeddingDimensionRequest asks what vector width a provider/model pair
+// produces, so the semantic dimension can be resolved instead of typed.
+type ProbeEmbeddingDimensionRequest struct {
+	Provider       schemas.ModelProvider `json:"provider"`
+	EmbeddingModel string                `json:"embedding_model"`
+}
+
+// ProbeEmbeddingDimensionResponse carries the measured vector width.
+type ProbeEmbeddingDimensionResponse struct {
+	Dimension int `json:"dimension"`
+}
+
 // GovernanceHandler manages HTTP requests for governance operations
 // ScopeNameResolver returns the human-readable name for a non-global model
 // config scope target (e.g. a virtual key's Name given its ID). The second
@@ -1050,6 +1066,7 @@ func (h *GovernanceHandler) RegisterRoutes(r *router.Router, middlewares ...sche
 	r.PUT("/api/governance/complexity-analyzer-config", lib.ChainMiddlewares(h.updateComplexityAnalyzerConfig, middlewares...))
 	r.POST("/api/governance/complexity-analyzer-config/reset", lib.ChainMiddlewares(h.resetComplexityAnalyzerConfig, middlewares...))
 	r.GET("/api/governance/complexity-analyzer-status", lib.ChainMiddlewares(h.getComplexitySemanticStatus, middlewares...))
+	r.POST("/api/governance/complexity-analyzer-config/embedding-dimension", lib.ChainMiddlewares(h.probeComplexityEmbeddingDimension, middlewares...))
 
 	// Virtual Key CRUD operations
 	r.GET("/api/governance/virtual-keys", lib.ChainMiddlewares(h.getVirtualKeys, middlewares...))
@@ -1220,6 +1237,44 @@ func (h *GovernanceHandler) getComplexitySemanticStatus(ctx *fasthttp.RequestCtx
 		return
 	}
 	SendJSON(ctx, status)
+}
+
+// probeComplexityEmbeddingDimension reports the vector width a provider/model
+// pair produces. Configuration clients call it when the operator picks a model
+// so the semantic dimension is measured rather than typed: a mistyped width is
+// undetectable until warmup fails against an already-created namespace.
+func (h *GovernanceHandler) probeComplexityEmbeddingDimension(ctx *fasthttp.RequestCtx) {
+	prober, ok := h.governanceManager.(complexityEmbeddingDimensionProber)
+	if !ok {
+		SendError(ctx, fasthttp.StatusServiceUnavailable, "governance manager does not support embedding dimension probing")
+		return
+	}
+
+	var payload ProbeEmbeddingDimensionRequest
+	decoder := json.NewDecoder(bytes.NewReader(ctx.PostBody()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		SendError(ctx, fasthttp.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	if strings.TrimSpace(string(payload.Provider)) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "provider is required")
+		return
+	}
+	if strings.TrimSpace(payload.EmbeddingModel) == "" {
+		SendError(ctx, fasthttp.StatusBadRequest, "embedding_model is required")
+		return
+	}
+
+	dimension, err := prober.ProbeComplexityEmbeddingDimension(ctx, payload.Provider, payload.EmbeddingModel)
+	if err != nil {
+		// Almost always an operator-correctable cause (unknown model, missing
+		// key, provider rejecting the request), so it is reported as a client
+		// error the form can render inline.
+		SendError(ctx, fasthttp.StatusBadRequest, fmt.Sprintf("failed to detect embedding dimension: %v", err))
+		return
+	}
+	SendJSON(ctx, ProbeEmbeddingDimensionResponse{Dimension: dimension})
 }
 
 // Virtual Key CRUD Operations
