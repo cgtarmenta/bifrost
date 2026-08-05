@@ -6148,8 +6148,13 @@ func (c *Config) GetAllKeys() ([]configstoreTables.TableKey, error) {
 				Models:            models,
 				BlacklistedModels: blacklisted,
 				Weight:            bifrost.Ptr(key.Weight),
-				Provider:          string(providerKey),
-				ConfigHash:        key.ConfigHash,
+				// Callers pick a provider from this list, so a key that cannot
+				// serve has to be distinguishable from one that can: a provider
+				// whose every key is disabled looks configured but fails at
+				// request time.
+				Enabled:    key.Enabled,
+				Provider:   string(providerKey),
+				ConfigHash: key.ConfigHash,
 			}
 			if key.AzureKeyConfig != nil {
 				cfg := *key.AzureKeyConfig // safe copy

@@ -24,8 +24,8 @@ export interface SemanticConfig {
 	dimension: number;
 	timeout?: string;
 	fallback?: SemanticFallback;
-	// Similarity floor a nearest-exemplar match must clear; below it the request
-	// resolves through `fallback`. 0 means the nearest exemplar always wins.
+	// Similarity floor the nearest reference phrase must clear; below it the
+	// request resolves through `fallback`. 0 means the nearest phrase always wins.
 	min_similarity?: number;
 	// How many of the most recent user messages are combined into the embedded
 	// text. 1 (the default) embeds only the latest message.
@@ -79,32 +79,34 @@ export const COMPLEXITY_MECHANISM_LABELS: Record<string, string> = {
 	skipped: "Skipped",
 };
 
-export const KEYWORD_LIST_DEFINITIONS: Array<{
+// One card per tier in the Phrase to Tier Mapping section.
+//
+// The descriptions anchor on the model the tier should route to, not on what
+// makes a request "simple" or "complex". That keeps the judgment with the
+// operator — it is their model lineup and their cost tolerance — while still
+// giving them something to sort against. Describing the tiers themselves put
+// Bifrost in charge of the definition, and restating the tier name back at them
+// ("phrases you deem simple") is not a description at all: the three cards have
+// to differ in something the operator can act on.
+export const TIER_PHRASE_LIST_DEFINITIONS: Array<{
 	key: KeywordListKey;
 	label: string;
-	lexicalDescription: string;
-	semanticDescription: string;
+	description: string;
 }> = [
 	{
 		key: "simple_keywords",
-		label: "Simple tier phrases",
-		lexicalDescription: "Signals for short, direct requests. Matches reduce the lexical complexity score.",
-		semanticDescription: "Examples of direct requests that need a short answer or one straightforward operation.",
+		label: "Simple",
+		description: "Requests to route to your cheapest, fastest model.",
 	},
 	{
 		key: "medium_keywords",
-		label: "Medium tier phrases",
-		lexicalDescription:
-			"Signals for implementation, technical work, and contained multi-step analysis. Matches increase the lexical complexity score.",
-		semanticDescription: "Examples that need several steps, some analysis, or a contained implementation.",
+		label: "Medium",
+		description: "Requests that need more capability than your cheapest model, but not your most capable.",
 	},
 	{
 		key: "complex_keywords",
-		label: "Complex tier phrases",
-		lexicalDescription:
-			"High-confidence signals for deeper reasoning, trade-offs, and investigation. One match guarantees at least MEDIUM. Two matches classify as COMPLEX.",
-		semanticDescription:
-			"Examples that need deeper reasoning across constraints, trade-offs, failure modes, or multiple connected decisions.",
+		label: "Complex",
+		description: "Requests that justify your most capable model.",
 	},
 ];
 
@@ -117,56 +119,45 @@ export const DEFAULT_TIER_BOUNDARIES: TierBoundaries = {
 export const DEFAULT_SEMANTIC_TIMEOUT_MS = 1500;
 
 // Server-side bounds from validateComplexitySemanticPhrases. Enforced here too
-// so an over-long exemplar fails in the form instead of as an opaque 400.
+// so an over-long phrase fails in the form instead of as an opaque 400.
 export const MIN_SEMANTIC_MESSAGE_HISTORY = 1;
 export const MAX_SEMANTIC_MESSAGE_HISTORY = 10;
 export const MAX_SEMANTIC_PHRASE_CHARACTERS = 2000;
 
-// Seeded when the user switches the page into semantic mode. Provider, model,
-// and dimension stay blank because only the operator knows them.
+// Seeded when a deployment has no semantic block saved yet. Provider and model
+// stay blank because only the operator knows them, and dimension is measured
+// from the model rather than entered.
+//
+// fallback is pinned to "none": the lexical classifier is no longer offered, so
+// a request that matches no reference phrase skips complexity tier routing
+// instead of silently falling through to keyword scoring.
 export const DEFAULT_SEMANTIC_CONFIG: SemanticConfig = {
 	provider: "",
 	embedding_model: "",
 	dimension: 0,
 	timeout: `${DEFAULT_SEMANTIC_TIMEOUT_MS}ms`,
-	fallback: "lexical",
+	fallback: "none",
 	min_similarity: 0,
 	message_history_count: 1,
 	count_toward_budgets: false,
 	vector_store: "embedded",
 };
 
-export const SEMANTIC_FALLBACK_OPTIONS: Array<{ value: SemanticFallback; label: string; description: string }> = [
-	{
-		value: "lexical",
-		label: "Fall back to lexical",
-		description:
-			"When semantic classification is unavailable, still warming, or below the similarity floor, score the request with the keyword analyzer.",
-	},
-	{
-		value: "none",
-		label: "No fallback",
-		description:
-			"Leave the request unclassified. Routing rules referencing complexity_tier will not match, so traffic follows your default routing.",
-	},
-];
-
-export const SEMANTIC_VECTOR_STORE_OPTIONS: Array<{ value: SemanticVectorStore; label: string; description: string }> = [
+// The wire type still accepts "external" (require the configured vector store,
+// fail if it is missing), but it is not offered: an operator choosing storage
+// should not be able to turn a missing vector store into a startup error. A
+// persisted "external" is presented, and re-saved, as "auto".
+export const SEMANTIC_VECTOR_STORE_OPTIONS: Array<{ value: Exclude<SemanticVectorStore, "external">; label: string; tooltip: string }> = [
 	{
 		value: "embedded",
 		label: "Embedded",
-		description: "Built-in in-process store. Needs no infrastructure, but exemplars are held in memory and re-embedded on every restart.",
+		tooltip: "Keeps phrase vectors in Bifrost's own memory. No infrastructure to run, but every restart re-embeds them.",
 	},
 	{
 		value: "auto",
-		label: "Auto",
-		description: "Use the configured vector store when one is available, otherwise fall back to the embedded store.",
-	},
-	{
-		value: "external",
-		label: "External",
-		description:
-			"Require the configured vector store. Exemplars persist across restarts, so warmup re-embeds only when the configuration changes.",
+		label: "Vector Store",
+		tooltip:
+			"Keeps phrase vectors in the vector store configured for Bifrost, so they survive restarts. Falls back to Embedded if no vector store is available.",
 	},
 ];
 

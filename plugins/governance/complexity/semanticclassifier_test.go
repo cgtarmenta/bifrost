@@ -760,3 +760,64 @@ func makeSemanticTestPhrases(prefix string, count int) []string {
 	}
 	return phrases
 }
+
+// TestSemanticClassifierRearmsForProviderOnlyWhenFailed pins the recovery path
+// for the state an operator can otherwise not escape: warmup fails because the
+// provider cannot serve (every key disabled), they fix the provider, and the
+// classifier has no other reason to try again — writes to the complexity
+// configuration are the only other trigger, and nothing about it has changed.
+func TestSemanticClassifierRearmsForProviderOnlyWhenFailed(t *testing.T) {
+	classifier := NewSemanticClassifier(context.Background(), bifrost.NewDefaultLogger(schemas.LogLevelError))
+	t.Cleanup(func() {
+		require.NoError(t, classifier.Close())
+	})
+
+	// Flipped after the failing generation settles, standing in for the operator
+	// re-enabling the key. Set through the classifier's own lock so the warmup
+	// goroutine cannot read it mid-write.
+	var serving atomic.Bool
+	classifier.SetEmbeddingFunc(func(_ context.Context, _ *SemanticConfig, text string) ([]float32, error) {
+		if !serving.Load() {
+			return nil, fmt.Errorf("synthetic provider failure")
+		}
+		switch text {
+		case "simple exemplar":
+			return []float32{1, 0}, nil
+		case "medium exemplar":
+			return []float32{0, 1}, nil
+		case "complex exemplar":
+			return []float32{-1, 0}, nil
+		}
+		return nil, fmt.Errorf("unexpected text %q", text)
+	})
+
+	config := testSemanticClassifierConfig(configstore.ComplexitySemanticVectorStoreEmbedded)
+	classifier.Configure(&config)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusFailed
+	}, time.Second, 10*time.Millisecond, "warmup should fail while the provider cannot serve")
+
+	// A provider this classifier does not embed through is none of its business:
+	// re-arming on every provider edit would re-embed every phrase for nothing.
+	serving.Store(true)
+	classifier.RearmForProvider(schemas.ModelProvider("anthropic"))
+	require.Never(t, func() bool {
+		return classifier.Status().State != SemanticStatusFailed
+	}, 200*time.Millisecond, 20*time.Millisecond, "an unrelated provider must not restart warmup")
+
+	classifier.RearmForProvider(config.Semantic.Provider)
+	require.Eventually(t, func() bool {
+		return classifier.Status().State == SemanticStatusReady
+	}, time.Second, 10*time.Millisecond, "the configured provider coming back should restart warmup")
+
+	// Healthy classifiers stay put: warmup re-embeds every phrase, so reacting to
+	// unrelated key edits on a serving provider would bill tokens for no gain.
+	classifier.mu.Lock()
+	revisionBefore := classifier.revision
+	classifier.mu.Unlock()
+	classifier.RearmForProvider(config.Semantic.Provider)
+	classifier.mu.Lock()
+	revisionAfter := classifier.revision
+	classifier.mu.Unlock()
+	assert.Equal(t, revisionBefore, revisionAfter, "a ready classifier must not re-embed on a provider change")
+}

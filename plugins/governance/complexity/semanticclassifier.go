@@ -187,6 +187,37 @@ func (c *SemanticClassifier) SetEmbeddingFunctions(embed EmbeddingFunc, embedBat
 	c.mu.Unlock()
 }
 
+// RearmForProvider restarts preparation after the embedding provider's own
+// configuration changed — a key re-enabled, added, or its model allow-list
+// widened. Warmup is otherwise only ever started by a write to the complexity
+// configuration, so a classifier that failed because its provider could not
+// serve stayed failed even once the operator fixed the provider, with no way
+// back short of re-saving a configuration that had not changed.
+//
+// Two guards keep this from becoming an expensive reflex. Warmup re-embeds
+// every reference phrase, which costs real tokens:
+//
+//   - only the provider this classifier actually embeds through counts; edits
+//     to any other provider are irrelevant to it.
+//   - only a failed classifier re-arms. A ready one is serving correctly and
+//     has nothing to gain, and a warming one is already doing this work.
+func (c *SemanticClassifier) RearmForProvider(provider schemas.ModelProvider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.config == nil || c.config.Semantic == nil {
+		return
+	}
+	if !strings.EqualFold(string(c.config.Semantic.Provider), string(provider)) {
+		return
+	}
+	if c.status.State != SemanticStatusFailed {
+		return
+	}
+	c.revision++
+	c.resetForCurrentConfigLocked()
+	c.requestWarmupLocked()
+}
+
 // ValidateConfig rejects semantic modes that cannot be satisfied by the current
 // process dependencies before a handler persists the configuration.
 func (c *SemanticClassifier) ValidateConfig(config *AnalyzerConfig) error {
@@ -215,8 +246,10 @@ func (c *SemanticClassifier) Status() SemanticStatusInfo {
 	return c.status
 }
 
-// Fallback returns the configured behavior when semantic classification cannot
-// serve the current request. Disabled semantic routing always falls back to lexical.
+// Fallback reports the `fallback` value a stored config still carries. Nothing
+// on the request path consults it any more: semantic is the only classification
+// mechanism, so a request semantic cannot serve publishes no tier rather than
+// degrading to the lexical scorer. Retained for config round-tripping.
 func (c *SemanticClassifier) Fallback() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
