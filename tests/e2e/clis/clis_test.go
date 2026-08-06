@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -35,6 +36,9 @@ func TestMain(m *testing.M) {
 	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		s := <-sigs
+		// Set this BEFORE killing so any cell that reaches writeReport in the
+		// grace window below records itself as interrupted rather than failed.
+		interrupted.Store(true)
 		fmt.Fprintf(os.Stderr, "\n\033[1;31m[harness] received %s, killing %d active subprocesses\033[0m\n",
 			s, countActive())
 		activeCommands.Range(func(k, _ any) bool {
@@ -49,6 +53,13 @@ func TestMain(m *testing.M) {
 	}()
 	os.Exit(m.Run())
 }
+
+// interrupted is set once a SIGINT/SIGTERM has been received. Cells whose
+// subprocess we deliberately killed would otherwise be recorded as genuine
+// failures ("claude exit: signal: killed"), which is misleading: an
+// interrupted sweep produced a report showing 4 red cells that had simply
+// been in flight at Ctrl-C, indistinguishable from real regressions.
+var interrupted atomic.Bool
 
 func countActive() int {
 	n := 0
@@ -257,11 +268,19 @@ func runCell(t *testing.T, cli CLI, prov Provider, model ModelInfo, sc scenario,
 	}
 	status := "pass"
 	softReason := ""
-	if runErr != nil && assertionErr != nil && isSoftPassCandidate(combined, cli.ID) {
+	switch {
+	case runErr != nil && interrupted.Load():
+		// We killed this cell's subprocess ourselves on Ctrl-C. Report it as
+		// interrupted so it's visibly distinct from a real regression, and
+		// don't fail the test for it.
+		status = "interrupted"
+		softReason = summarizeFailure(runErr.Error())
+		runErr = nil
+	case runErr != nil && assertionErr != nil && isSoftPassCandidate(combined, cli.ID):
 		status = "soft_pass"
 		softReason = summarizeFailure(assertionErr.Error())
 		runErr = nil
-	} else if runErr != nil {
+	case runErr != nil:
 		status = "fail"
 	}
 	writeReport(t, cli.ID, prov.ID, safeName(model.ID), scenarioLabel, modelRef, status, runErr, softReason, dur, combined)
@@ -646,7 +665,7 @@ func writeHTMLReport() {
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:24px;background:#f7f8fa;color:#151922}
 h1{margin:0 0 8px;font-size:24px}.muted{color:#667085}.summary{display:flex;gap:12px;margin:18px 0;flex-wrap:wrap}
 .pill{border-radius:999px;padding:6px 12px;background:white;border:1px solid #d0d5dd;font-weight:600}
-.pass{color:#067647}.soft_pass{color:#b54708}.fail{color:#b42318}.skip{color:#475467}
+.pass{color:#067647}.soft_pass{color:#b54708}.fail{color:#b42318}.skip{color:#475467}.interrupted{color:#475467}
 table{width:100%;border-collapse:collapse;background:white;border:1px solid #d0d5dd}
 th,td{padding:10px 12px;border-bottom:1px solid #eaecf0;text-align:left;vertical-align:top;font-size:13px}
 th{position:sticky;top:0;background:#f2f4f7;z-index:1}.model{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
@@ -656,7 +675,12 @@ a{color:#175cd3;text-decoration:none}a:hover{text-decoration:underline}
 	body.WriteString("<h1>Bifrost CLI Harness Report</h1>")
 	body.WriteString(`<div class="muted">Generated ` + html.EscapeString(time.Now().Format(time.RFC3339)) + `</div>`)
 	body.WriteString(`<div class="summary">`)
-	for _, status := range []string{"pass", "soft_pass", "fail"} {
+	for _, status := range []string{"pass", "soft_pass", "fail", "interrupted"} {
+		// pass/fail always render (a zero there is itself information);
+		// the qualified states only render when they actually occurred.
+		if counts[status] == 0 && status != "pass" && status != "fail" {
+			continue
+		}
 		body.WriteString(fmt.Sprintf(`<span class="pill %s">%s: %d</span>`, status, html.EscapeString(status), counts[status]))
 	}
 	body.WriteString(`</div><table><thead><tr><th>Status</th><th>CLI</th><th>Provider</th><th>Model</th><th>Scenario</th><th>Effort</th><th>Duration</th><th>Reason</th><th>Logs</th></tr></thead><tbody>`)
