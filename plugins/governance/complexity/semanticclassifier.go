@@ -130,6 +130,7 @@ type SemanticClassifier struct {
 	warmCancel       context.CancelFunc
 	warming          bool
 	embeddedInFlight map[string]int
+	embeddingCache   *semanticEmbeddingCache
 	wg               sync.WaitGroup
 }
 
@@ -141,9 +142,10 @@ func NewSemanticClassifier(ctx context.Context, logger schemas.Logger) *Semantic
 		ctx = context.Background()
 	}
 	return &SemanticClassifier{
-		ctx:    ctx,
-		logger: logger,
-		status: SemanticStatusInfo{State: SemanticStatusDisabled},
+		ctx:            ctx,
+		logger:         logger,
+		status:         SemanticStatusInfo{State: SemanticStatusDisabled},
+		embeddingCache: newSemanticEmbeddingCache(),
 	}
 }
 
@@ -480,7 +482,7 @@ func (c *SemanticClassifier) runWarmupWorker() {
 		}
 		c.mu.Unlock()
 
-		loaded, namespace, err := warmSemanticExemplars(warmCtx, store, config, embed, embedBatch)
+		loaded, namespace, err := warmSemanticExemplars(warmCtx, store, config, embed, embedBatch, c.embeddingCache)
 		cancel()
 
 		c.mu.Lock()
@@ -639,6 +641,7 @@ func warmSemanticExemplars(
 	config *AnalyzerConfig,
 	embed EmbeddingFunc,
 	embedBatch BatchEmbeddingFunc,
+	cache *semanticEmbeddingCache,
 ) (int, string, error) {
 	if config == nil || config.Semantic == nil {
 		return 0, "", nil
@@ -665,22 +668,36 @@ func warmSemanticExemplars(
 		return 0, namespace, fmt.Errorf("check complexity warmup marker: %w", err)
 	}
 
-	var markerEmbedding []float32
-	for batchStart := 0; batchStart < len(exemplars); batchStart += semanticWarmupBatchSize {
+	// Vectors already held for this provider/model/dimension are reused, so a
+	// tier-list edit pays the provider only for the phrases it actually added.
+	// The rest of this function is unchanged: every exemplar is still written
+	// into the new generation's namespace under a fingerprinted id.
+	cache.useIdentity(semanticEmbeddingIdentity(config.Semantic))
+	vectors := make([][]float32, len(exemplars))
+	pending := make([]int, 0, len(exemplars))
+	for index, exemplar := range exemplars {
+		if vector, ok := cache.get(exemplar.Phrase); ok {
+			vectors[index] = vector
+			continue
+		}
+		pending = append(pending, index)
+	}
+
+	for batchStart := 0; batchStart < len(pending); batchStart += semanticWarmupBatchSize {
 		batchEnd := batchStart + semanticWarmupBatchSize
-		if batchEnd > len(exemplars) {
-			batchEnd = len(exemplars)
+		if batchEnd > len(pending) {
+			batchEnd = len(pending)
 		}
 		if err := ctx.Err(); err != nil {
-			return batchStart, namespace, err
+			return 0, namespace, err
 		}
 
-		batch := exemplars[batchStart:batchEnd]
+		batch := pending[batchStart:batchEnd]
 		var embeddings [][]float32
 		if embedBatch != nil && len(batch) > 1 {
 			phrases := make([]string, len(batch))
-			for index, exemplar := range batch {
-				phrases[index] = exemplar.Phrase
+			for index, exemplarIndex := range batch {
+				phrases[index] = exemplars[exemplarIndex].Phrase
 			}
 			var err error
 			embeddings, err = embedBatch(ctx, config.Semantic, phrases)
@@ -688,7 +705,7 @@ func warmSemanticExemplars(
 				err = fmt.Errorf("%w: expected %d vectors, got %d", ErrBatchEmbeddingsUnsupported, len(batch), len(embeddings))
 			}
 			if err != nil && !errors.Is(err, ErrBatchEmbeddingsUnsupported) {
-				return batchStart, namespace, fmt.Errorf("embed exemplar batch %d-%d: %w", batchStart+1, batchEnd, err)
+				return 0, namespace, fmt.Errorf("embed exemplar batch %d-%d: %w", batchStart+1, batchEnd, err)
 			}
 			if errors.Is(err, ErrBatchEmbeddingsUnsupported) {
 				// Do not retry later batches through a provider/model that has
@@ -700,31 +717,46 @@ func warmSemanticExemplars(
 
 		if embedBatch == nil || len(batch) == 1 {
 			embeddings = make([][]float32, len(batch))
-			for index, exemplar := range batch {
+			for index, exemplarIndex := range batch {
+				exemplar := exemplars[exemplarIndex]
 				embedding, err := embed(ctx, config.Semantic, exemplar.Phrase)
 				if err != nil {
-					absoluteIndex := batchStart + index
-					return absoluteIndex, namespace, fmt.Errorf("embed %s exemplar %d: %w", strings.ToLower(exemplar.Tier), absoluteIndex+1, err)
+					return 0, namespace, fmt.Errorf("embed %s exemplar %d: %w", strings.ToLower(exemplar.Tier), exemplarIndex+1, err)
 				}
 				embeddings[index] = embedding
 			}
 		}
 
-		for index, exemplar := range batch {
-			absoluteIndex := batchStart + index
+		for index, exemplarIndex := range batch {
+			exemplar := exemplars[exemplarIndex]
 			embedding := embeddings[index]
 			if len(embedding) != config.Semantic.Dimension {
-				return absoluteIndex, namespace, fmt.Errorf("%s exemplar %d returned dimension %d, expected %d", strings.ToLower(exemplar.Tier), absoluteIndex+1, len(embedding), config.Semantic.Dimension)
+				return 0, namespace, fmt.Errorf("%s exemplar %d returned dimension %d, expected %d", strings.ToLower(exemplar.Tier), exemplarIndex+1, len(embedding), config.Semantic.Dimension)
 			}
-			if err := store.Add(ctx, namespace, semanticExemplarID(fingerprint, exemplar), embedding, map[string]interface{}{
-				semanticMetadataTier:        exemplar.Tier,
-				semanticMetadataKind:        semanticMetadataKindExample,
-				semanticMetadataFingerprint: fingerprint,
-			}); err != nil {
-				return absoluteIndex, namespace, fmt.Errorf("store %s exemplar %d: %w", strings.ToLower(exemplar.Tier), absoluteIndex+1, err)
-			}
-			markerEmbedding = embedding
+			vectors[exemplarIndex] = embedding
+			// Cached only after the width check, so a provider that answered for
+			// the wrong model cannot poison later warmups.
+			cache.put(exemplar.Phrase, embedding)
 		}
+	}
+
+	var markerEmbedding []float32
+	for index, exemplar := range exemplars {
+		if err := ctx.Err(); err != nil {
+			return index, namespace, err
+		}
+		embedding := vectors[index]
+		if len(embedding) != config.Semantic.Dimension {
+			return index, namespace, fmt.Errorf("%s exemplar %d returned dimension %d, expected %d", strings.ToLower(exemplar.Tier), index+1, len(embedding), config.Semantic.Dimension)
+		}
+		if err := store.Add(ctx, namespace, semanticExemplarID(fingerprint, exemplar), embedding, map[string]interface{}{
+			semanticMetadataTier:        exemplar.Tier,
+			semanticMetadataKind:        semanticMetadataKindExample,
+			semanticMetadataFingerprint: fingerprint,
+		}); err != nil {
+			return index, namespace, fmt.Errorf("store %s exemplar %d: %w", strings.ToLower(exemplar.Tier), index+1, err)
+		}
+		markerEmbedding = embedding
 	}
 	if err := store.Add(ctx, namespace, markerID, markerEmbedding, map[string]interface{}{
 		semanticMetadataKind:        semanticMetadataKindMarker,
@@ -732,7 +764,92 @@ func warmSemanticExemplars(
 	}); err != nil {
 		return len(exemplars), namespace, fmt.Errorf("store complexity warmup marker: %w", err)
 	}
+	cache.retain(exemplars)
 	return len(exemplars), namespace, nil
+}
+
+// semanticEmbeddingCache remembers the vector each exemplar phrase embedded to,
+// so editing the tier lists re-embeds only what actually changed.
+//
+// Generations stay immutable and content-addressed: adding one phrase still
+// mints a new fingerprint, a new namespace, and a new record id for every
+// exemplar. What changes is where those vectors come from. A stored vector
+// cannot be read back — vectorstore.SearchResult carries only an id, score, and
+// properties — so reuse has to be held in process.
+//
+// Entries are only valid for the provider, model, and dimension that produced
+// them; switching any of the three invalidates all of them at once, which is
+// what identity tracks. Warmup prunes the map to the phrases it just embedded,
+// so a long-lived process editing its tier lists repeatedly does not accumulate
+// vectors for phrases nobody references any more.
+type semanticEmbeddingCache struct {
+	mu       sync.Mutex
+	identity string
+	vectors  map[string][]float32
+}
+
+func newSemanticEmbeddingCache() *semanticEmbeddingCache {
+	return &semanticEmbeddingCache{vectors: map[string][]float32{}}
+}
+
+// semanticEmbeddingIdentity names everything about a config that changes what a
+// phrase embeds to. Two configs sharing it can share vectors.
+func semanticEmbeddingIdentity(semantic *SemanticConfig) string {
+	if semantic == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s\x00%s\x00%d", semantic.Provider, semantic.EmbeddingModel, semantic.Dimension)
+}
+
+// useIdentity drops every cached vector when the embedding identity changes,
+// because a vector from another provider or model is not merely stale but
+// wrong: it would be stored as though it described this phrase under the new
+// model, and nothing downstream could tell.
+func (c *semanticEmbeddingCache) useIdentity(identity string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.identity != identity {
+		c.identity = identity
+		c.vectors = map[string][]float32{}
+	}
+}
+
+func (c *semanticEmbeddingCache) get(phrase string) ([]float32, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	vector, ok := c.vectors[phrase]
+	return vector, ok
+}
+
+func (c *semanticEmbeddingCache) put(phrase string, vector []float32) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.vectors[phrase] = vector
+}
+
+// retain prunes the cache to the phrases a completed warmup actually used.
+func (c *semanticEmbeddingCache) retain(exemplars []semanticExemplar) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keep := make(map[string][]float32, len(exemplars))
+	for _, exemplar := range exemplars {
+		if vector, ok := c.vectors[exemplar.Phrase]; ok {
+			keep[exemplar.Phrase] = vector
+		}
+	}
+	c.vectors = keep
 }
 
 // semanticExemplar binds one normalized shared tier phrase to its routing tier.
